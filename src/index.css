@@ -768,6 +768,21 @@ button:focus-visible {
   flex-direction: column;
   gap: 2px;
 }
+.stat-tile-warning {
+  background: var(--warning-wash);
+  outline: 1px solid var(--warning);
+}
+.stat-tile-warning .stat-value {
+  color: #9a6600;
+}
+:root[data-theme='dark'] .stat-tile-warning .stat-value {
+  color: var(--warning);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .stat-tile-warning .stat-value {
+    color: var(--warning);
+  }
+}
 .stat-label {
   font-size: 0.72rem;
   color: var(--text-secondary);

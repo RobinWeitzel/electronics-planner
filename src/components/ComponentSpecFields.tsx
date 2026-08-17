@@ -38,6 +38,14 @@ export default function ComponentSpecFields({ category, battery, converter, load
             <NumberField label="Series count" value={battery.seriesCount} min={1} step={1} onChange={(v) => onChangeBattery({ ...battery, seriesCount: Math.max(1, Math.round(v)) })} hint="Cells wired in series (multiplies voltage)" />
             <NumberField label="Parallel count" value={battery.parallelCount} min={1} step={1} onChange={(v) => onChangeBattery({ ...battery, parallelCount: Math.max(1, Math.round(v)) })} hint="Cells wired in parallel (multiplies capacity)" />
             <NumberField label="Usable fraction" value={battery.usableFraction} min={0} max={1} step={0.05} onChange={(v) => onChangeBattery({ ...battery, usableFraction: v })} hint="Fraction of rated capacity treated as usable (0-1)" />
+            <NumberField
+              label="Max discharge current"
+              value={battery.maxDischargeCurrentMa}
+              min={0}
+              suffix="mA"
+              onChange={(v) => onChangeBattery({ ...battery, maxDischargeCurrentMa: v })}
+              hint="Optional — 0 skips the check. Above this, expect voltage sag, shutdown, or cell damage."
+            />
           </div>
           <p className="computed-line">
             Pack: {(battery.nominalVoltage * Math.max(1, battery.seriesCount)).toFixed(2)}V, {(battery.capacityMah * Math.max(1, battery.parallelCount)).toFixed(0)}mAh rated
@@ -85,8 +93,15 @@ function LoadFields({ load, onChange }: { load: LoadSpec; onChange: (l: LoadSpec
     <div className="field-grid">
       <NumberField label="Voltage min" value={load.voltageMin} suffix="V" onChange={(v) => onChange({ ...load, voltageMin: v })} />
       <NumberField label="Voltage max" value={load.voltageMax} suffix="V" onChange={(v) => onChange({ ...load, voltageMax: v })} />
-      <NumberField label="Active current" value={load.activeCurrentMa} suffix="mA" onChange={(v) => onChange({ ...load, activeCurrentMa: v })} />
       <NumberField label="Idle current" value={load.idleCurrentMa} suffix="mA" onChange={(v) => onChange({ ...load, idleCurrentMa: v })} />
+      <NumberField label="Active current" value={load.activeCurrentMa} suffix="mA" onChange={(v) => onChange({ ...load, activeCurrentMa: v })} hint="Typical/normal running current — used for the runtime estimate" />
+      <NumberField
+        label="Peak current"
+        value={load.peakCurrentMa}
+        suffix="mA"
+        onChange={(v) => onChange({ ...load, peakCurrentMa: v })}
+        hint="Worst case under load/stall (e.g. a stepper or servo pushing against resistance). Only used to check converters/battery can survive it — not the runtime estimate."
+      />
       <NumberField label="Time active" value={load.dutyCyclePercent} min={0} max={100} suffix="%" onChange={(v) => onChange({ ...load, dutyCyclePercent: v })} hint="% of time spent at the active current; rest of the time uses idle current" />
     </div>
   );

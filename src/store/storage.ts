@@ -13,12 +13,48 @@ export function createInitialAppData(): AppData {
   };
 }
 
+/**
+ * Backfills fields added after a def/spec may have already been saved to
+ * localStorage (e.g. peakCurrentMa, maxDischargeCurrentMa), so old data opens
+ * with sane values instead of blanks.
+ */
+function backfillComponentDef(def: ComponentDef): ComponentDef {
+  const next = { ...def };
+  if (next.load && typeof next.load.peakCurrentMa !== 'number') {
+    next.load = { ...next.load, peakCurrentMa: next.load.activeCurrentMa };
+  }
+  if (next.battery && typeof next.battery.maxDischargeCurrentMa !== 'number') {
+    next.battery = { ...next.battery, maxDischargeCurrentMa: 0 };
+  }
+  return next;
+}
+
+function backfillProject(project: Project): Project {
+  return {
+    ...project,
+    components: project.components.map((c) =>
+      c.overrides
+        ? {
+            ...c,
+            overrides: {
+              ...c.overrides,
+              load: c.overrides.load && typeof c.overrides.load.peakCurrentMa !== 'number' ? { ...c.overrides.load, peakCurrentMa: c.overrides.load.activeCurrentMa } : c.overrides.load,
+              battery: c.overrides.battery && typeof c.overrides.battery.maxDischargeCurrentMa !== 'number' ? { ...c.overrides.battery, maxDischargeCurrentMa: 0 } : c.overrides.battery,
+            },
+          }
+        : c,
+    ),
+  };
+}
+
 function migrate(data: Partial<AppData>): AppData {
   // Future schema changes get handled here, keyed off data.schemaVersion.
+  const library = Array.isArray(data.library) && data.library.length > 0 ? data.library : PRESET_LIBRARY.map((d) => ({ ...d }));
+  const projects = Array.isArray(data.projects) ? data.projects : [];
   return {
     schemaVersion: SCHEMA_VERSION,
-    projects: Array.isArray(data.projects) ? data.projects : [],
-    library: Array.isArray(data.library) && data.library.length > 0 ? data.library : PRESET_LIBRARY.map((d) => ({ ...d })),
+    projects: projects.map(backfillProject),
+    library: library.map(backfillComponentDef),
     theme: data.theme ?? 'system',
   };
 }

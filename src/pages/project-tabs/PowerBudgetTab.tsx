@@ -48,29 +48,36 @@ export default function PowerBudgetTab({ project }: { project: Project }) {
             </ul>
           )}
 
-          {circuit.batteries.map((battery) => (
-            <div key={battery.instanceId} className="battery-summary">
-              <div className="battery-stat-row">
-                <div className="stat-tile">
-                  <span className="stat-label">Runtime</span>
-                  <span className="stat-value stat-value-lg">{formatRuntime(battery.runtimeHours)}</span>
+          {circuit.batteries.map((battery) => {
+            const overloaded = circuit.nodes.find((n) => n.instanceId === battery.instanceId)?.overloaded ?? false;
+            return (
+              <div key={battery.instanceId} className="battery-summary">
+                <div className="battery-stat-row">
+                  <div className="stat-tile">
+                    <span className="stat-label">Runtime</span>
+                    <span className="stat-value stat-value-lg">{formatRuntime(battery.runtimeHours)}</span>
+                  </div>
+                  <div className="stat-tile">
+                    <span className="stat-label">Average draw</span>
+                    <span className="stat-value">{formatCurrentMa(battery.totalCurrentMa)}</span>
+                  </div>
+                  <div className={`stat-tile${overloaded ? ' stat-tile-warning' : ''}`}>
+                    <span className="stat-label">Peak draw</span>
+                    <span className="stat-value">{formatCurrentMa(battery.peakCurrentMa)}</span>
+                  </div>
+                  <div className="stat-tile">
+                    <span className="stat-label">Pack voltage</span>
+                    <span className="stat-value">{formatVoltage(battery.packVoltage)}</span>
+                  </div>
+                  <div className="stat-tile">
+                    <span className="stat-label">Usable capacity</span>
+                    <span className="stat-value">{battery.usableCapacityMah.toFixed(0)} mAh</span>
+                  </div>
                 </div>
-                <div className="stat-tile">
-                  <span className="stat-label">Total draw</span>
-                  <span className="stat-value">{formatCurrentMa(battery.totalCurrentMa)}</span>
-                </div>
-                <div className="stat-tile">
-                  <span className="stat-label">Pack voltage</span>
-                  <span className="stat-value">{formatVoltage(battery.packVoltage)}</span>
-                </div>
-                <div className="stat-tile">
-                  <span className="stat-label">Usable capacity</span>
-                  <span className="stat-value">{battery.usableCapacityMah.toFixed(0)} mAh</span>
-                </div>
+                <PowerBreakdownChart items={battery.breakdown.map((b) => ({ id: b.instanceId, label: b.label, category: b.category, valueMw: b.powerMw }))} />
               </div>
-              <PowerBreakdownChart items={battery.breakdown.map((b) => ({ id: b.instanceId, label: b.label, category: b.category, valueMw: b.powerMw }))} />
-            </div>
-          ))}
+            );
+          })}
 
           {circuit.batteries.length === 0 && <p className="muted">Add a battery to this circuit to get a runtime estimate.</p>}
         </section>

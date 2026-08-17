@@ -159,7 +159,7 @@ describe('analyzeProject', () => {
   it('lets an "other" pass-through node carry both power and its own extra draw', () => {
     const library: ComponentDef[] = [
       battery('bat', { nominalVoltage: 5, capacityMah: 1000, usableFraction: 1 }),
-      { id: 'sw', name: 'switch-with-led', category: 'other', load: { voltageMin: 0, voltageMax: 10, activeCurrentMa: 5, idleCurrentMa: 5, dutyCyclePercent: 100 } },
+      { id: 'sw', name: 'switch-with-led', category: 'other', load: { voltageMin: 0, voltageMax: 10, activeCurrentMa: 5, idleCurrentMa: 5, peakCurrentMa: 5, dutyCyclePercent: 100 } },
       load('ld', { activeCurrentMa: 20, idleCurrentMa: 20, dutyCyclePercent: 100, voltageMin: 0, voltageMax: 10 }),
     ];
     const project = makeProject(
@@ -173,6 +173,95 @@ describe('analyzeProject', () => {
     );
     const { circuits } = analyzeProject(project, library);
     expect(circuits[0].batteries[0].totalCurrentMa).toBeCloseTo(25, 5); // 5mA (switch LED) + 20mA (load), passed straight through
+  });
+
+  it('flags a converter that is fine on average but overloaded at peak (stepper-like low-duty spike)', () => {
+    // A stepper-ish load: low duty cycle keeps the average current modest, but
+    // the peak (stall/high-torque) current alone exceeds the converter's rating.
+    const library = [
+      battery('bat', { nominalVoltage: 12, capacityMah: 2000, usableFraction: 1 }),
+      converter('conv', { inputVoltageMin: 6, inputVoltageMax: 24, outputVoltage: 12, efficiencyPercent: 100, maxOutputCurrentMa: 500 }),
+      load('stepper', { idleCurrentMa: 10, activeCurrentMa: 100, peakCurrentMa: 800, dutyCyclePercent: 10, voltageMin: 8, voltageMax: 24 }),
+    ];
+    const project = makeProject(
+      [inst('b1', 'bat'), inst('c1', 'conv'), inst('m1', 'stepper')],
+      [
+        edge('e1', 'b1', 'power-out', 'c1', 'power-in'),
+        edge('e2', 'c1', 'power-out', 'm1', 'power-in'),
+        edge('g1', 'b1', 'ground', 'c1', 'ground'),
+        edge('g2', 'c1', 'ground', 'm1', 'ground'),
+      ],
+    );
+    const { circuits } = analyzeProject(project, library);
+    const battery0 = circuits[0].batteries[0];
+    // Average: 100*0.1 + 10*0.9 = 19mA — comfortably under the 500mA converter rating.
+    expect(battery0.totalCurrentMa).toBeCloseTo(19, 5);
+    // Peak: 800mA — well over the 500mA converter rating, even though the average looked fine.
+    expect(battery0.peakCurrentMa).toBeCloseTo(800, 5);
+    expect(
+      circuits[0].warnings.some((w) => w.message.includes('fine on average') && w.message.includes('peak draw under load')),
+    ).toBe(true);
+    const converterNode = circuits[0].nodes.find((n) => n.instanceId === 'c1');
+    expect(converterNode?.overloaded).toBe(true);
+  });
+
+  it('flags a converter whose average draw alone already exceeds its rating (sustained overload)', () => {
+    const library = [
+      battery('bat', { nominalVoltage: 12, capacityMah: 2000, usableFraction: 1 }),
+      converter('conv', { inputVoltageMin: 6, inputVoltageMax: 24, outputVoltage: 12, efficiencyPercent: 100, maxOutputCurrentMa: 100 }),
+      load('ld', { idleCurrentMa: 200, activeCurrentMa: 200, peakCurrentMa: 200, dutyCyclePercent: 100, voltageMin: 8, voltageMax: 24 }),
+    ];
+    const project = makeProject(
+      [inst('b1', 'bat'), inst('c1', 'conv'), inst('l1', 'ld')],
+      [
+        edge('e1', 'b1', 'power-out', 'c1', 'power-in'),
+        edge('e2', 'c1', 'power-out', 'l1', 'power-in'),
+        edge('g1', 'b1', 'ground', 'c1', 'ground'),
+        edge('g2', 'c1', 'ground', 'l1', 'ground'),
+      ],
+    );
+    const { circuits } = analyzeProject(project, library);
+    expect(circuits[0].warnings.some((w) => w.message.includes("average draw") && w.message.includes('exceeds its 100mA rating'))).toBe(true);
+  });
+
+  it('flags a battery whose peak draw exceeds its max discharge rating even though average is fine', () => {
+    const library = [
+      battery('bat', { nominalVoltage: 9, capacityMah: 550, usableFraction: 1, maxDischargeCurrentMa: 400 }),
+      load('servo', { idleCurrentMa: 10, activeCurrentMa: 100, peakCurrentMa: 650, dutyCyclePercent: 20, voltageMin: 4.8, voltageMax: 9 }),
+    ];
+    const project = makeProject(
+      [inst('b1', 'bat'), inst('s1', 'servo')],
+      [edge('e1', 'b1', 'power-out', 's1', 'power-in'), edge('g1', 'b1', 'ground', 's1', 'ground')],
+    );
+    const { circuits } = analyzeProject(project, library);
+    const battery0 = circuits[0].batteries[0];
+    expect(battery0.totalCurrentMa).toBeCloseTo(28, 5); // 100*0.2 + 10*0.8
+    expect(battery0.peakCurrentMa).toBeCloseTo(650, 5);
+    expect(
+      circuits[0].warnings.some((w) => w.message.includes('max discharge rating') && w.message.includes('fine on average')),
+    ).toBe(true);
+    const batteryNode = circuits[0].nodes.find((n) => n.instanceId === 'b1');
+    expect(batteryNode?.overloaded).toBe(true);
+  });
+
+  it('skips the overload check when maxOutputCurrentMa/maxDischargeCurrentMa is left at 0 (unspecified)', () => {
+    const library = [
+      battery('bat', { nominalVoltage: 5, capacityMah: 1000, usableFraction: 1, maxDischargeCurrentMa: 0 }),
+      converter('conv', { inputVoltageMin: 4, inputVoltageMax: 12, outputVoltage: 5, efficiencyPercent: 100, maxOutputCurrentMa: 0 }),
+      load('ld', { idleCurrentMa: 5000, activeCurrentMa: 5000, peakCurrentMa: 5000, dutyCyclePercent: 100, voltageMin: 0, voltageMax: 10 }),
+    ];
+    const project = makeProject(
+      [inst('b1', 'bat'), inst('c1', 'conv'), inst('l1', 'ld')],
+      [
+        edge('e1', 'b1', 'power-out', 'c1', 'power-in'),
+        edge('e2', 'c1', 'power-out', 'l1', 'power-in'),
+        edge('g1', 'b1', 'ground', 'c1', 'ground'),
+        edge('g2', 'c1', 'ground', 'l1', 'ground'),
+      ],
+    );
+    const { circuits } = analyzeProject(project, library);
+    expect(circuits[0].warnings.some((w) => w.message.includes('rating') || w.message.includes('overload'))).toBe(false);
+    expect(circuits[0].nodes.every((n) => !n.overloaded)).toBe(true);
   });
 });
 

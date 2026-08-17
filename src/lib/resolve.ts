@@ -1,4 +1,4 @@
-import type { ComponentDef, ComponentInstance } from '../types';
+import type { BatterySpec, ComponentDef, ComponentInstance, LoadSpec } from '../types';
 
 /** Merge a library ComponentDef with an instance's per-instance overrides. */
 export function resolveComponentSpec(def: ComponentDef, instance: ComponentInstance): ComponentDef {
@@ -27,9 +27,24 @@ export function summarizeSpec(spec: ComponentDef): string {
   }
   if (spec.load) {
     const l = spec.load;
-    return `${l.voltageMin}–${l.voltageMax}V · ${l.activeCurrentMa}mA active / ${l.idleCurrentMa}mA idle @ ${l.dutyCyclePercent}%`;
+    const peak = effectivePeakCurrentMa(l);
+    const peakNote = peak > l.activeCurrentMa ? ` (peak ${peak}mA)` : '';
+    return `${l.voltageMin}–${l.voltageMax}V · ${l.activeCurrentMa}mA active${peakNote} / ${l.idleCurrentMa}mA idle @ ${l.dutyCyclePercent}%`;
   }
   return 'Pass-through, no power draw';
+}
+
+/**
+ * Peak current, falling back to the active current for loads saved before
+ * peakCurrentMa existed (or a part with no meaningful spike).
+ */
+export function effectivePeakCurrentMa(load: LoadSpec): number {
+  return typeof load.peakCurrentMa === 'number' ? load.peakCurrentMa : load.activeCurrentMa;
+}
+
+/** Max continuous discharge current, falling back to "unspecified" (0 = check skipped). */
+export function effectiveMaxDischargeCurrentMa(battery: BatterySpec): number {
+  return typeof battery.maxDischargeCurrentMa === 'number' ? battery.maxDischargeCurrentMa : 0;
 }
 
 /** Effective pack voltage accounting for series-connected cells. */

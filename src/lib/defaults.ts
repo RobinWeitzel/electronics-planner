@@ -19,6 +19,7 @@ export function defaultBatterySpec(chemistry: Chemistry = 'liion'): BatterySpec 
     seriesCount: 1,
     parallelCount: 1,
     usableFraction: USABLE_FRACTION_BY_CHEMISTRY[chemistry],
+    maxDischargeCurrentMa: 0,
   };
 }
 
@@ -39,6 +40,7 @@ export function defaultLoadSpec(): LoadSpec {
     voltageMax: 5.5,
     activeCurrentMa: 50,
     idleCurrentMa: 5,
+    peakCurrentMa: 50,
     dutyCyclePercent: 100,
   };
 }

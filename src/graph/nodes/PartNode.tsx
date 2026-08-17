@@ -6,6 +6,8 @@ export interface PartNodeAnalysis {
   currentMa?: number;
   isPowered: boolean;
   groundOk: boolean;
+  /** Converter/battery whose rated output or discharge current is exceeded by average or peak draw. */
+  overloaded?: boolean;
 }
 
 export interface PartNodeData {
@@ -50,7 +52,7 @@ const HANDLES: Record<ComponentCategory, HandleSpec[]> = {
 export default function PartNode({ data, selected }: NodeProps) {
   const d = data as unknown as PartNodeData;
   const handles = HANDLES[d.category] ?? HANDLES.other;
-  const showWarning = !!d.analysis && d.category !== 'battery' && (!d.analysis.isPowered || !d.analysis.groundOk);
+  const showWarning = !!d.analysis && ((d.category !== 'battery' && (!d.analysis.isPowered || !d.analysis.groundOk)) || d.analysis.overloaded);
 
   return (
     <div className={`part-node part-node-${d.category}${selected ? ' selected' : ''}${showWarning ? ' has-warning' : ''}`}>
@@ -65,6 +67,7 @@ export default function PartNode({ data, selected }: NodeProps) {
           {d.analysis.isPowered && d.analysis.currentMa !== undefined && d.category !== 'battery' && <span>{d.analysis.currentMa.toFixed(1)}mA</span>}
           {d.category !== 'battery' && !d.analysis.isPowered && <span className="warn-pill">not powered</span>}
           {d.analysis.isPowered && !d.analysis.groundOk && <span className="warn-pill">no ground</span>}
+          {d.analysis.overloaded && <span className="warn-pill">overloaded</span>}
         </div>
       )}
     </div>

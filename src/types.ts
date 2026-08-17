@@ -27,6 +27,13 @@ export interface BatterySpec {
    * discharged). Defaults applied per chemistry, editable.
    */
   usableFraction: number;
+  /**
+   * Maximum continuous discharge current the pack can safely supply, in mA.
+   * 0 means "not specified" — the discharge-limit check is skipped. Exceeding
+   * this causes voltage sag, shutdown, or (worst case) damage/heat, even if
+   * the circuit's *average* draw looks fine.
+   */
+  maxDischargeCurrentMa: number;
 }
 
 export interface ConverterSpec {
@@ -43,9 +50,19 @@ export interface ConverterSpec {
 export interface LoadSpec {
   voltageMin: number;
   voltageMax: number;
+  /** Typical current while doing its normal thing — used for the runtime/average power budget. */
   activeCurrentMa: number;
+  /** Current while idle/standby — used for the runtime/average power budget. */
   idleCurrentMa: number;
-  /** 0-100, percentage of time spent drawing activeCurrentMa. */
+  /**
+   * Worst-case current under load (e.g. a stepper or servo under mechanical
+   * load/stall, a motor at startup, a radio mid-transmit). NOT used for the
+   * runtime estimate — only for checking whether converters/wiring/the
+   * battery can actually survive the worst moment, not just the average.
+   * Defaults to activeCurrentMa when a part has no meaningful spike.
+   */
+  peakCurrentMa: number;
+  /** 0-100, percentage of time spent drawing activeCurrentMa (rather than idleCurrentMa). */
   dutyCyclePercent: number;
 }
 

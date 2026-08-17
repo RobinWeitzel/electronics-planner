@@ -21,7 +21,7 @@
 //   - 'signal' edges (e.g. I2C/SPI/GPIO wires) are ignored for power calc.
 
 import type { CircuitEdge, ComponentDef, Project } from '../types';
-import { batteryPackCapacityMah, batteryPackVoltage, instanceLabel, resolveComponentSpec } from './resolve';
+import { batteryPackCapacityMah, batteryPackVoltage, effectiveMaxDischargeCurrentMa, effectivePeakCurrentMa, instanceLabel, resolveComponentSpec } from './resolve';
 
 export interface Warning {
   severity: 'warning' | 'error';
@@ -36,11 +36,15 @@ export interface NodeResult {
   isPowered: boolean;
   /** Voltage domain this node is operating at, if powered. */
   domainVoltage?: number;
-  /** This node's own duty-cycle-weighted current draw (loads/other), mA. */
+  /** This node's own duty-cycle-weighted average current draw (loads/other), mA. */
   ownCurrentMa: number;
   /** Total current this node pulls from its upstream parent, mA (includes downstream + own draw, and converter step-up in the parent's domain). */
   drawFromParentMa: number;
+  /** Same as drawFromParentMa, but worst-case: everything downstream assumed to hit its peak current at once. */
+  peakDrawFromParentMa: number;
   groundOk: boolean;
+  /** True for a converter/battery whose rated output/discharge current is exceeded (by average or peak draw). */
+  overloaded: boolean;
   parentInstanceId?: string;
 }
 
@@ -58,7 +62,10 @@ export interface BatteryResult {
   packVoltage: number;
   packCapacityMah: number;
   usableCapacityMah: number;
+  /** Duty-cycle-weighted average current — what the runtime estimate is based on. */
   totalCurrentMa: number;
+  /** Worst case: everything downstream assumed to hit its peak current at the same moment. Not used for runtime — only for the discharge-limit check. */
+  peakCurrentMa: number;
   runtimeHours: number | null;
   /** Where this battery's power goes: each real load's draw + each converter's conversion loss. Sums to packVoltage * totalCurrentMa. */
   breakdown: PowerBreakdownEntry[];
@@ -247,17 +254,43 @@ export function analyzeProject(project: Project, library: ComponentDef[]): Proje
     }
 
     // ---- 4. Bottom-up current computation ----
+    // Two parallel passes: "average" (duty-cycle-weighted — what the runtime
+    // estimate uses) and "peak" (everything downstream assumed to hit its
+    // worst-case current at the same instant — what the overload checks use).
+    // A part can look perfectly fine on average and still brown out a
+    // converter or sag a battery the moment something like a stepper motor
+    // actually kicks in, so ratings are checked against the peak figure too.
     const ownCurrentCache = new Map<string, number>();
+    const peakOwnCurrentCache = new Map<string, number>();
     const drawFromParentCache = new Map<string, number>();
+    const peakDrawFromParentCache = new Map<string, number>();
 
     function ownCurrentMa(id: string): number {
       if (ownCurrentCache.has(id)) return ownCurrentCache.get(id)!;
       const spec = specByInstance.get(id);
       let value = 0;
-      if (spec?.category === 'load' && spec.load) value = dutyWeightedCurrentMa(spec.load);
-      else if (spec?.category === 'other' && spec.load) value = dutyWeightedCurrentMa(spec.load);
+      if ((spec?.category === 'load' || spec?.category === 'other') && spec.load) value = dutyWeightedCurrentMa(spec.load);
       ownCurrentCache.set(id, value);
       return value;
+    }
+
+    function peakOwnCurrentMa(id: string): number {
+      if (peakOwnCurrentCache.has(id)) return peakOwnCurrentCache.get(id)!;
+      const spec = specByInstance.get(id);
+      let value = 0;
+      if ((spec?.category === 'load' || spec?.category === 'other') && spec.load) value = effectivePeakCurrentMa(spec.load);
+      peakOwnCurrentCache.set(id, value);
+      return value;
+    }
+
+    function converterInputCurrent(id: string, outputCurrent: number): number {
+      const spec = specByInstance.get(id)!;
+      const conv = spec.converter!;
+      const vIn = inputVoltage.get(id) ?? conv.inputVoltageMin;
+      const pOut = conv.outputVoltage * outputCurrent;
+      const eff = Math.max(0.01, conv.efficiencyPercent / 100);
+      const pIn = pOut / eff;
+      return vIn > 0 ? pIn / vIn : 0;
     }
 
     function drawFromParent(id: string): number {
@@ -265,31 +298,75 @@ export function analyzeProject(project: Project, library: ComponentDef[]): Proje
       const spec = specByInstance.get(id);
       const kids = childrenOf.get(id) ?? [];
       const downstream = kids.reduce((sum, kid) => sum + drawFromParent(kid), 0);
-
-      let result: number;
-      if (spec?.category === 'converter' && spec.converter) {
-        const conv = spec.converter;
-        const outputCurrent = downstream;
-        if (outputCurrent > conv.maxOutputCurrentMa) {
-          warnings.push({
-            severity: 'warning',
-            message: `${labelOf(id)} is asked for ${outputCurrent.toFixed(0)}mA but is only rated for ${conv.maxOutputCurrentMa}mA output.`,
-            instanceIds: [id],
-          });
-        }
-        const vIn = inputVoltage.get(id) ?? conv.inputVoltageMin;
-        const pOut = conv.outputVoltage * outputCurrent;
-        const eff = Math.max(0.01, conv.efficiencyPercent / 100);
-        const pIn = pOut / eff;
-        result = vIn > 0 ? pIn / vIn : 0;
-      } else {
-        result = ownCurrentMa(id) + downstream;
-      }
+      const result = spec?.category === 'converter' && spec.converter ? converterInputCurrent(id, downstream) : ownCurrentMa(id) + downstream;
       drawFromParentCache.set(id, result);
       return result;
     }
 
-    // ---- 5. Ground check ----
+    function peakDrawFromParent(id: string): number {
+      if (peakDrawFromParentCache.has(id)) return peakDrawFromParentCache.get(id)!;
+      const spec = specByInstance.get(id);
+      const kids = childrenOf.get(id) ?? [];
+      const downstream = kids.reduce((sum, kid) => sum + peakDrawFromParent(kid), 0);
+      const result = spec?.category === 'converter' && spec.converter ? converterInputCurrent(id, downstream) : peakOwnCurrentMa(id) + downstream;
+      peakDrawFromParentCache.set(id, result);
+      return result;
+    }
+
+    // ---- 5. Overload checks (converter/battery ratings vs average + peak draw) ----
+    const overloadedIds = new Set<string>();
+
+    for (const id of memberIds) {
+      const spec = specByInstance.get(id);
+      if (!spec?.converter || !domainVoltage.has(id)) continue;
+      const rated = spec.converter.maxOutputCurrentMa;
+      if (!(rated > 0)) continue;
+      const kids = childrenOf.get(id) ?? [];
+      const avgOut = kids.reduce((sum, kid) => sum + drawFromParent(kid), 0);
+      const peakOut = kids.reduce((sum, kid) => sum + peakDrawFromParent(kid), 0);
+      if (avgOut > rated) {
+        overloadedIds.add(id);
+        warnings.push({
+          severity: 'warning',
+          message: `${labelOf(id)}'s average draw of ${avgOut.toFixed(0)}mA exceeds its ${rated}mA rating — expect overheating, brownout, or shutdown under sustained use.`,
+          instanceIds: [id],
+        });
+      } else if (peakOut > rated) {
+        overloadedIds.add(id);
+        warnings.push({
+          severity: 'warning',
+          message: `${labelOf(id)} looks fine on average (${avgOut.toFixed(0)}mA) but peak draw under load could reach ${peakOut.toFixed(0)}mA — above its ${rated}mA rating. That's enough to brown out or reset everything on this rail when it kicks in.`,
+          instanceIds: [id],
+        });
+      }
+    }
+
+    for (const batteryId of batteryIds) {
+      const battery = specByInstance.get(batteryId)?.battery;
+      if (!battery) continue;
+      const maxDischarge = effectiveMaxDischargeCurrentMa(battery);
+      if (!(maxDischarge > 0)) continue;
+      const kids = childrenOf.get(batteryId) ?? [];
+      const avgOut = kids.reduce((sum, kid) => sum + drawFromParent(kid), 0);
+      const peakOut = kids.reduce((sum, kid) => sum + peakDrawFromParent(kid), 0);
+      if (avgOut > maxDischarge) {
+        overloadedIds.add(batteryId);
+        warnings.push({
+          severity: 'warning',
+          message: `${labelOf(batteryId)}'s average draw of ${avgOut.toFixed(0)}mA exceeds its ${maxDischarge}mA max discharge rating — expect voltage sag, shutdown, or cell damage under sustained use.`,
+          instanceIds: [batteryId],
+        });
+      } else if (peakOut > maxDischarge) {
+        overloadedIds.add(batteryId);
+        warnings.push({
+          severity: 'warning',
+          message: `${labelOf(batteryId)} looks fine on average (${avgOut.toFixed(0)}mA) but peak draw under load could reach ${peakOut.toFixed(0)}mA — above its ${maxDischarge}mA max discharge rating. Expect the voltage to sag hard (or the pack to cut out) the moment everything kicks in at once.`,
+          instanceIds: [batteryId],
+        });
+      }
+    }
+
+    // ---- 6. Ground check ----
     function checkGround(id: string, batteryId: string): boolean {
       const spec = specByInstance.get(id);
       if (!spec || spec.category === 'other') return true; // pass-through/no explicit ground pin requirement
@@ -325,7 +402,9 @@ export function analyzeProject(project: Project, library: ComponentDef[]): Proje
         domainVoltage: domainVoltage.get(id),
         ownCurrentMa: ownCurrentMa(id),
         drawFromParentMa: isPowered && spec?.category !== 'battery' ? drawFromParent(id) : 0,
+        peakDrawFromParentMa: isPowered && spec?.category !== 'battery' ? peakDrawFromParent(id) : 0,
         groundOk,
+        overloaded: overloadedIds.has(id),
         parentInstanceId: parentOf.get(id)?.source,
       };
     });
@@ -353,6 +432,7 @@ export function analyzeProject(project: Project, library: ComponentDef[]): Proje
       const usableCapacityMah = packCapacityMah * Math.min(1, Math.max(0, spec.usableFraction));
       const kids = childrenOf.get(id) ?? [];
       const totalCurrentMa = kids.reduce((sum, kid) => sum + drawFromParent(kid), 0);
+      const peakCurrentMa = kids.reduce((sum, kid) => sum + peakDrawFromParent(kid), 0);
       const runtimeHours = totalCurrentMa > 0 ? usableCapacityMah / totalCurrentMa : null;
       const breakdown: PowerBreakdownEntry[] = [];
       for (const kid of kids) collectBreakdown(kid, breakdown);
@@ -363,6 +443,7 @@ export function analyzeProject(project: Project, library: ComponentDef[]): Proje
         packCapacityMah,
         usableCapacityMah,
         totalCurrentMa,
+        peakCurrentMa,
         runtimeHours,
         breakdown,
       };

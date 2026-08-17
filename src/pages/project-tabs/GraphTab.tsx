@@ -15,7 +15,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import ComponentPicker from '../../components/ComponentPicker';
-import PartNode, { type PartNodeData } from '../../graph/nodes/PartNode';
+import PartNode, { type PartNodeAnalysis, type PartNodeData } from '../../graph/nodes/PartNode';
 import { analyzeProject, isValidPowerHandlePair } from '../../lib/calc';
 import { newComponentDef } from '../../lib/defaults';
 import { instanceLabel, resolveComponentSpec, summarizeSpec } from '../../lib/resolve';
@@ -51,13 +51,14 @@ export default function GraphTab({ project }: { project: Project }) {
 
   const analysis = useMemo(() => analyzeProject(project, library), [project, library]);
   const nodeResultById = useMemo(() => {
-    const map = new Map<string, { domainVoltage?: number; currentMa: number; isPowered: boolean; groundOk: boolean }>();
+    const map = new Map<string, PartNodeAnalysis>();
     for (const circuit of analysis.circuits) {
       for (const n of circuit.nodes) {
-        map.set(n.instanceId, { domainVoltage: n.domainVoltage, currentMa: n.drawFromParentMa, isPowered: n.isPowered, groundOk: n.groundOk });
+        map.set(n.instanceId, { domainVoltage: n.domainVoltage, currentMa: n.drawFromParentMa, isPowered: n.isPowered, groundOk: n.groundOk, overloaded: n.overloaded });
       }
       for (const b of circuit.batteries) {
-        map.set(b.instanceId, { domainVoltage: b.packVoltage, currentMa: b.totalCurrentMa, isPowered: true, groundOk: true });
+        const overloaded = circuit.nodes.find((n) => n.instanceId === b.instanceId)?.overloaded ?? false;
+        map.set(b.instanceId, { domainVoltage: b.packVoltage, currentMa: b.totalCurrentMa, isPowered: true, groundOk: true, overloaded });
       }
     }
     return map;
